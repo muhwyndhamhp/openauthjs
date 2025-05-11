@@ -152,13 +152,15 @@ export interface OnSuccessResponder<
    */
   subject<Type extends T["type"]>(
     type: Type,
-    properties: Extract<T, { type: Type }>["properties"],
+    id: string,
+    properties: [Extract<T, { type: Type }>["properties"]] extends [never]
+      ? Record<string, any>
+      : Extract<T, { type: Type }>["properties"],
     opts?: {
       ttl?: {
         access?: number
         refresh?: number
       }
-      subject?: string
     },
   ): Promise<Response>
 }
@@ -208,7 +210,7 @@ export const aws = awsHandle
 
 export interface IssuerInput<
   Providers extends Record<string, Provider<any>>,
-  Subjects extends SubjectSchema,
+  Subjects extends SubjectSchema = SubjectSchema,
   Result = {
     [key in keyof Providers]: Prettify<
       {
@@ -236,7 +238,7 @@ export interface IssuerInput<
    * })
    * ```
    */
-  subjects: Subjects
+  subjects?: Subjects
   /**
    * The storage adapter that you want to use.
    *
@@ -515,18 +517,25 @@ export function issuer<
     async success(ctx: Context, properties: any, successOpts) {
       return await input.success(
         {
-          async subject(type, properties, subjectOpts) {
+          async subject(type, id, unvalidated, subjectOpts) {
             const authorization = await getAuthorization(ctx)
-            const subject = subjectOpts?.subject
-              ? subjectOpts.subject
-              : await resolveSubject(type, properties)
-            await successOpts?.invalidate?.(
-              await resolveSubject(type, properties),
-            )
+            let properties: any = unvalidated
+            const validator = input.subjects?.[type]
+            if (validator) {
+              const validated =
+                await validator["~standard"].validate(properties)
+              if (validated.issues) {
+                throw new Error(
+                  validated.issues.map((i) => i.message).join("\n"),
+                )
+              }
+              properties = validated.value
+            }
+            await successOpts?.invalidate?.(id)
             if (authorization.response_type === "token") {
               const location = new URL(authorization.redirect_uri)
               const tokens = await generateTokens(ctx, {
-                subject,
+                subject: id,
                 type: type as string,
                 properties,
                 clientID: authorization.client_id,
@@ -551,7 +560,7 @@ export function issuer<
                 {
                   type,
                   properties,
-                  subject,
+                  subject: id,
                   redirectURI: authorization.redirect_uri,
                   clientID: authorization.client_id,
                   pkce: authorization.pkce,
@@ -634,18 +643,6 @@ export function issuer<
       .encrypt(await encryptionKey().then((k) => k.public))
   }
 
-  async function resolveSubject(type: string, properties: any) {
-    const jsonString = JSON.stringify(properties)
-    const encoder = new TextEncoder()
-    const data = encoder.encode(jsonString)
-    const hashBuffer = await crypto.subtle.digest("SHA-1", data)
-    const hashArray = Array.from(new Uint8Array(hashBuffer))
-    const hashHex = hashArray
-      .map((b) => b.toString(16).padStart(2, "0"))
-      .join("")
-    return `${type}:${hashHex.slice(0, 16)}`
-  }
-
   async function generateTokens(
     ctx: Context,
     value: {
@@ -684,7 +681,8 @@ export function issuer<
         value.ttl.refresh,
       )
     }
-    const accessTimeUsed = Math.floor((value.timeUsed ?? Date.now()) / 1000)
+    const expiry =
+      Math.floor((value.timeUsed ?? Date.now()) / 1000) + value.ttl.access
     return {
       access: await new SignJWT({
         mode: "access",
@@ -694,7 +692,7 @@ export function issuer<
         iss: issuer(ctx),
         sub: value.subject,
       })
-        .setExpirationTime(Math.floor(accessTimeUsed + value.ttl.access))
+        .setExpirationTime(expiry)
         .setProtectedHeader(
           await signingKey().then((k) => ({
             alg: k.alg,
@@ -703,9 +701,7 @@ export function issuer<
           })),
         )
         .sign(await signingKey().then((item) => item.private)),
-      expiresIn: Math.floor(
-        accessTimeUsed + value.ttl.access - Date.now() / 1000,
-      ),
+      expiresIn: Math.floor(expiry - Date.now() / 1000),
       refresh: [value.subject, refreshToken].join(":"),
     }
   }
@@ -979,11 +975,10 @@ export function issuer<
         })
         return input.success(
           {
-            async subject(type, properties, opts) {
+            async subject(type, id, properties, opts) {
               const tokens = await generateTokens(c, {
                 type: type as string,
-                subject:
-                  opts?.subject || (await resolveSubject(type, properties)),
+                subject: id,
                 properties,
                 clientID: clientID.toString(),
                 ttl: {
@@ -1122,18 +1117,20 @@ export function issuer<
       issuer: issuer(c),
     })
 
-    const validated = await input.subjects[result.payload.type][
-      "~standard"
-    ].validate(result.payload.properties)
-
-    if (!validated.issues && result.payload.mode === "access") {
-      return c.json(validated.value as SubjectSchema)
+    let validated = result.payload.properties
+    const schema = input.subjects?.[result.payload.type]
+    if (schema) {
+      const result = await schema["~standard"].validate(validated)
+      if (result.issues) {
+        return c.json({
+          error: "invalid_token",
+          error_description: "Invalid token",
+        })
+      }
+      validated = result.value
     }
 
-    return c.json({
-      error: "invalid_token",
-      error_description: "Invalid token",
-    })
+    return c.json(validated as SubjectSchema)
   })
 
   app.onError(async (err, c) => {

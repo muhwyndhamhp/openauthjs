@@ -1,0 +1,35 @@
+#!/usr/bin/env bash
+
+set -e
+
+SNAPSHOT_ID=$(date +%Y%m%d%H%M%S)
+
+echo "Creating snapshot release: ${SNAPSHOT_ID}"
+
+# First build the packages
+echo "Building packages..."
+(cd packages/openauth && bun run build)
+(cd packages/solid && bun run build)
+(cd packages/react && bun run build)
+
+# Use changesets to create a snapshot release
+echo "Creating snapshot release with ID: ${SNAPSHOT_ID}"
+bun changeset version --snapshot 
+
+# Fix workspace protocol in solid package that changesets replaces
+echo "Fixing workspace protocol reference..."
+sed -i 's/"@openauthjs\/openauth": "[^"]*"/"@openauthjs\/openauth": "workspace:*"/g' packages/solid/package.json
+
+# Publish the snapshot versions
+echo "Publishing snapshot versions..."
+(cd packages/openauth && bun publish --tag snapshot)
+(cd packages/solid && bun publish --tag snapshot)
+(cd packages/react && bun publish --tag snapshot)
+
+
+# Reset versions in package.json files after snapshot publish
+echo "Resetting package versions..."
+git checkout .
+
+
+echo "Snapshot release completed: ${SNAPSHOT_ID}"

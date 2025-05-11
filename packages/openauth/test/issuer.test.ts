@@ -14,9 +14,7 @@ import { MemoryStorage } from "../src/storage/memory.js"
 import { Provider } from "../src/provider/provider.js"
 
 const subjects = createSubjects({
-  user: object({
-    userID: string(),
-  }),
+  user: object({}),
 })
 
 let storage = MemoryStorage()
@@ -52,11 +50,10 @@ const issuerConfig = {
   },
   success: async (ctx, value) => {
     if (value.provider === "dummy") {
-      return ctx.subject("user", {
-        userID: "123",
+      return ctx.subject("1", {
+        userID: "1",
       })
     }
-    throw new Error("Invalid provider: " + value.provider)
   },
 }
 const auth = issuer(issuerConfig)
@@ -75,6 +72,7 @@ describe("code flow", () => {
   test("success", async () => {
     const client = createClient({
       issuer: "https://auth.example.com",
+      subjects,
       clientID: "123",
       fetch: (a, b) => Promise.resolve(auth.request(a, b)),
     })
@@ -108,13 +106,12 @@ describe("code flow", () => {
       refresh: expectNonEmptyString,
       expiresIn: 60,
     })
-    const verified = await client.verify(subjects, tokens.access)
+    const verified = await client.verify(tokens.access)
     if (verified.err) throw verified.err
     expect(verified.subject).toStrictEqual({
+      id: "123",
       type: "user",
-      properties: {
-        userID: "123",
-      },
+      properties: {},
     })
   })
 })
@@ -144,14 +141,13 @@ describe("client credentials flow", () => {
       access_token: expectNonEmptyString,
       refresh_token: expectNonEmptyString,
     })
-    const verified = await client.verify(subjects, tokens.access_token)
+    const verified = await client.verify(tokens.access_token)
     expect(verified).toStrictEqual({
       aud: "myuser",
       subject: {
+        id: "123",
         type: "user",
-        properties: {
-          userID: "123",
-        },
+        properties: {},
       },
     })
   })
@@ -227,14 +223,13 @@ describe("refresh token", () => {
     expect(refreshed.access_token).not.toEqual(tokens.access)
     expect(refreshed.refresh_token).not.toEqual(tokens.refresh)
 
-    const verified = await client.verify(subjects, refreshed.access_token)
+    const verified = await client.verify(refreshed.access_token)
     expect(verified).toStrictEqual({
       aud: "123",
       subject: {
+        id: "123",
         type: "user",
-        properties: {
-          userID: "123",
-        },
+        properties: {},
       },
     })
   })
@@ -254,14 +249,13 @@ describe("refresh token", () => {
     expect(refreshed.access_token).not.toEqual(tokens.access)
     expect(refreshed.refresh_token).not.toEqual(tokens.refresh)
 
-    const verified = await client.verify(subjects, refreshed.access_token)
+    const verified = await client.verify(refreshed.access_token)
     expect(verified).toStrictEqual({
       aud: "123",
       subject: {
+        id: "123",
         type: "user",
-        properties: {
-          userID: "123",
-        },
+        properties: {},
       },
     })
   })
